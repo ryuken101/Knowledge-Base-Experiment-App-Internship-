@@ -1,53 +1,72 @@
-# ---------------------------------------------------------------------------
-# Secrets — never commit real credentials. Keep .env.example as the template.
-# ---------------------------------------------------------------------------
+# ---- Secrets / env ----
 .env
-**/.env
 .env.*
 !.env.example
+*.local
 
-# ---------------------------------------------------------------------------
-# Python (kb_backend)
-# ---------------------------------------------------------------------------
+# ---- Python (kb_backend) ----
 __pycache__/
 *.py[cod]
 *$py.class
-*.egg-info/
-.eggs/
+*.so
+.Python
 build/
+develop-eggs/
 dist/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
 .venv/
 venv/
 env/
+ENV/
+.python-version
 
-# ---------------------------------------------------------------------------
-# Local databases (SurrealDB rocksdb store, KbApp SQLite)
-# ---------------------------------------------------------------------------
-kb.db
+# Test / coverage / type caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# ---- Databases ----
 *.db
-*.db-shm
-*.db-wal
 *.sqlite
 *.sqlite3
 
-# ---------------------------------------------------------------------------
-# .NET / C# (KbApp)
-# ---------------------------------------------------------------------------
-[Bb]in/
-[Oo]bj/
+# ---- .NET / C# (KbApp legacy) ----
+bin/
+obj/
 *.user
 *.suo
 .vs/
+*.dll
+*.exe
+*.pdb
 
-# ---------------------------------------------------------------------------
-# IDE / editor / OS
-# ---------------------------------------------------------------------------
+# ---- Editors / IDEs ----
 .vscode/
 .idea/
 *.swp
+*.swo
+
+# ---- OS ----
 .DS_Store
 Thumbs.db
-kb_backend/.env
+desktop.ini
