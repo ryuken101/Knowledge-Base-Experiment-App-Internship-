@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kb-backend"
+version = "0.1.0"
+description = "Per-user markdown knowledge base for the task-managing agent, backed by SurrealDB."
+requires-python = ">=3.10"
+dependencies = [
+    "surrealdb",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+mcp = ["mcp"]
+
+[tool.setuptools]
+packages = ["kb_program", "kb_mcp"]
