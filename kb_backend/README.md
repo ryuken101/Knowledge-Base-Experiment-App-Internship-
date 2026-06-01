@@ -12,7 +12,8 @@ kb_backend/
 ├── schema.surql      # complete fresh-install schema (task tables + knowledge_base)
 ├── reset.surql       # wipe all records, keep the schema
 ├── kb_program/       # execution layer (library only): KbCLI + SurrealDB access
-└── kb_mcp/           # FastMCP server: one tool per KbCLI method
+├── kb_mcp/           # FastMCP server: one tool per KbCLI method
+└── kb_api/           # FastAPI REST server: one endpoint per KbCLI method
 ```
 
 ## 1. Import the schema
@@ -61,9 +62,36 @@ api.append_knowledge_base("- deadline-driven; surface overdue tasks first")
 | `set_knowledge_base`    | Replace the entire KB with new markdown |
 | `append_knowledge_base` | Append a note on its own line, preserving existing content |
 | `clear_knowledge_base`  | Empty the KB (keeps the record) |
+| `delete_knowledge_base_line` | Delete a single line (1-based) from the KB |
+| `delete_knowledge_base` | Delete the entire KB file (the whole record) |
 
 `KbError` is returned as `Error: ...` rather than raised, so the agent never sees a
 traceback.
+
+## REST API
+
+A FastAPI client over the same `KbCLI`, for non-MCP callers. Single-user (operates on
+`KB_USER`); touches only the `knowledge_base` table.
+
+```bash
+pip install -e ".[api]"     # execution layer + FastAPI + uvicorn
+python -m kb_api            # serves on 127.0.0.1:8000 (KB_API_HOST/KB_API_PORT to override)
+```
+
+Interactive Swagger UI at `http://127.0.0.1:8000/docs`. Every endpoint returns the
+normalized KB object `{user_id, content, created_at, updated_at}`.
+
+| Method & path | Action |
+|---------------|--------|
+| `GET /knowledge-base`          | Return the KB (creates an empty KB on first read) |
+| `PUT /knowledge-base`          | Replace the entire KB — body `{"content": "..."}` |
+| `PATCH /knowledge-base/append` | Append a note on its own line — body `{"text": "..."}` |
+| `DELETE /knowledge-base`       | Empty the KB content (keeps the row and `created_at`) |
+| `DELETE /knowledge-base/lines/{n}` | Delete a single line (1-based), keeping the rest |
+| `DELETE /knowledge-base/file`  | Delete the entire KB file — the whole row (a later GET recreates an empty one) |
+
+`KbError` becomes an HTTP `400` with `{"detail": "..."}`, mirroring the MCP client's
+`Error: ...` contract.
 
 ## Follow-ups (out of scope for now)
 

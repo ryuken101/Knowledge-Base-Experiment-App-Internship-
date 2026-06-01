@@ -67,6 +67,28 @@ def clear_knowledge_base() -> str:
         return f"Error: {e}"
 
 
+@mcp.tool()
+def delete_knowledge_base_line(line_number: int) -> str:
+    """Delete a single line (1-based) from the knowledge base, keeping the rest.
+    Use this to remove one stale note without rewriting the whole file."""
+    try:
+        _api().delete_line(line_number)
+        return f"Deleted line {line_number}."
+    except KbError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def delete_knowledge_base() -> str:
+    """Delete the entire knowledge base file (the whole record), not just its
+    content. A later get_knowledge_base recreates an empty one."""
+    try:
+        _api().delete_knowledge_base()
+        return "Knowledge base deleted."
+    except KbError as e:
+        return f"Error: {e}"
+
+
 def main() -> None:
     mcp.run()
 
