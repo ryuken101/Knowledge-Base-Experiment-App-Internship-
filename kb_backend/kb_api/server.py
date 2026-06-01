@@ -18,6 +18,7 @@ import os
 from functools import lru_cache
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from kb_program import KbCLI, KbError
@@ -26,6 +27,15 @@ app = FastAPI(
     title="knowledge-base",
     description="Per-user markdown knowledge base, backed by SurrealDB.",
     version="0.1.0",
+)
+
+# CORS so the Flutter web build (served from a different origin) can call the API.
+# Wide open for single-user dev; tighten allow_origins when auth lands (Stage 3).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 

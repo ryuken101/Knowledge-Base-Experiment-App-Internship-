@@ -1,5 +1,8 @@
 README.md
 pyproject.toml
+kb_api/__init__.py
+kb_api/__main__.py
+kb_api/server.py
 kb_backend.egg-info/PKG-INFO
 kb_backend.egg-info/SOURCES.txt
 kb_backend.egg-info/dependency_links.txt
