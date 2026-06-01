@@ -18,11 +18,15 @@ eggs/
 .eggs/
 lib/
 lib64/
+!kb_flutter/lib/
 parts/
 sdist/
 var/
 wheels/
 *.egg-info/
+# NOTE: the bare `lib/` below is the Python build-output ignore. It is
+# unanchored, so it also matches the Flutter app's source at kb_flutter/lib/ —
+# the negation further down re-includes that. Keep them together.
 .installed.cfg
 *.egg
 pip-log.txt
