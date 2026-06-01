@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: kb-backend
+Version: 0.1.0
+Summary: Per-user markdown knowledge base for the task-managing agent, backed by SurrealDB.
+Requires-Python: >=3.10
+Requires-Dist: surrealdb
+Requires-Dist: python-dotenv
+Provides-Extra: mcp
+Requires-Dist: mcp; extra == "mcp"
