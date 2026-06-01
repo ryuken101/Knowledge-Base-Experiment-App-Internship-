@@ -76,6 +76,31 @@ class KbCLI:
         """Empty the KB content while keeping the row (and created_at)."""
         return self.set_knowledge_base("", user_id)
 
+    def delete_line(self, line_number: int, user_id: str | None = None) -> dict:
+        """Remove a single line (1-based) from the KB markdown, keeping the rest.
+        Bumps updated_at. Raises KbError if the line number is out of range."""
+        if line_number is None:
+            raise KbError("line_number is required")
+        content = self.get_knowledge_base(user_id)["content"] or ""
+        if content == "":
+            raise KbError("knowledge base is empty; no lines to delete")
+        lines = content.split("\n")
+        if line_number < 1 or line_number > len(lines):
+            raise KbError(f"line {line_number} out of range (1..{len(lines)})")
+        del lines[line_number - 1]
+        return self.set_knowledge_base("\n".join(lines), user_id)
+
+    def delete_knowledge_base(self, user_id: str | None = None) -> dict:
+        """Delete the whole KB row (the entire markdown file), not just its
+        content. A later get_knowledge_base will recreate an empty one
+        (create-on-read). Returns the deleted user id; idempotent if absent."""
+        rid = self._resolve_user(user_id)
+        row = self._fetch_row(rid)
+        existed = row is not None
+        if existed:
+            self._client.delete(row["id"])
+        return {"user_id": str(rid), "deleted": existed}
+
     # ---- internals -------------------------------------------------------
 
     def _resolve_user(self, user_id: str | None) -> RecordID:

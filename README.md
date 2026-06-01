@@ -54,7 +54,10 @@ agent that already manages tasks can also read and update its own knowledge base
 │   ├── kb_mcp/                #   MCP server client
 │   │   ├── server.py         #     FastMCP tools, one per KbCLI method
 │   │   └── __main__.py       #     `python -m kb_mcp`
-│   ├── pyproject.toml         #   package + optional [mcp] extra
+│   ├── kb_api/                #   REST server client
+│   │   ├── server.py         #     FastAPI endpoints, one per KbCLI method
+│   │   └── __main__.py       #     `python -m kb_api`
+│   ├── pyproject.toml         #   package + optional [mcp] / [api] extras
 │   ├── .env.example           #   credential template
 │   └── README.md              #   quickstart for this package
 │
@@ -67,8 +70,43 @@ agent that already manages tasks can also read and update its own knowledge base
 ## 3. `kb_backend/` — active (Python + SurrealDB + MCP)
 
 This is the real deliverable. Its architecture mirrors the task app's conventions: a
-client-agnostic **execution layer** (`kb_program`) plus thin **clients** (`kb_mcp`) that
-wrap it. Direct SurrealDB SDK calls, no ORM/repository layer.
+client-agnostic **execution layer** (`kb_program`) plus thin **clients** (`kb_mcp`,
+`kb_api`) that wrap it. Direct SurrealDB SDK calls, no ORM/repository layer.
+
+```mermaid
+flowchart TD
+    agent["AI agent (per user)"]
+    http["HTTP / Swagger client"]
+
+    subgraph clients["Thin clients (one call per KbCLI method)"]
+        mcp["kb_mcp<br/>FastMCP server<br/>(stdio tools)"]
+        api["kb_api<br/>FastAPI server<br/>(REST + /docs)"]
+    end
+
+    subgraph exec["kb_program — execution layer (library only)"]
+        cli["KbCLI<br/>get / set / append / clear<br/>delete_line / delete_knowledge_base"]
+        db["db.py<br/>lru_cached Surreal client<br/>signs in as root, reads .env"]
+    end
+
+    subgraph surreal["SurrealDB (main / main)"]
+        kb[("knowledge_base<br/>1 row per user · UNIQUE(user)")]
+        usr[("user<br/>seeded on first write")]
+    end
+
+    agent -->|MCP| mcp
+    http -->|HTTP| api
+    mcp --> cli
+    api --> cli
+    cli --> db
+    db --> kb
+    kb -.->|record&lt;user&gt; link| usr
+
+    classDef store fill:#eef,stroke:#88a;
+    class kb,usr store;
+```
+
+KbError raised in `KbCLI` is surfaced to callers as a structured value — `Error: ...` over
+MCP, an HTTP `400 {"detail": ...}` over REST — never a traceback.
 
 ### 3.1 Data model
 
@@ -109,6 +147,8 @@ already has the task tables.
 | `set_knowledge_base(content, user_id=None)` | Replaces the entire markdown file. Bumps `updated_at`. |
 | `append_knowledge_base(text, user_id=None)` | Appends `text` on its own line, preserving existing content. |
 | `clear_knowledge_base(user_id=None)` | Empties `content` but keeps the row (and `created_at`). |
+| `delete_line(line_number, user_id=None)` | Removes a single line (1-based) from `content`, keeping the rest. |
+| `delete_knowledge_base(user_id=None)` | Deletes the whole row (the entire markdown file). A later `get` recreates an empty one. |
 
 **User scoping.** The task app's `user` table is currently *dead structure* (no records,
 no auth yet), so the KB operates on a **single configurable user** for now: pass `user_id`
@@ -135,6 +175,28 @@ traceback.
 | `set_knowledge_base(content)` | Replace the entire KB. |
 | `append_knowledge_base(text)` | Append a note on its own line. |
 | `clear_knowledge_base` | Empty the KB (keeps the record). |
+| `delete_knowledge_base_line(line_number)` | Delete a single line (1-based) from the KB. |
+| `delete_knowledge_base` | Delete the entire KB file (the whole record). |
+
+### 3.4 REST server (`kb_api`)
+
+A `FastAPI` client over the same `KbCLI`, for non-MCP/HTTP callers. Thin like `kb_mcp`:
+one endpoint per method, single-user (`KB_USER`), and only the `knowledge_base` table is
+touched. Each endpoint returns the normalized KB object
+(`{user_id, content, created_at, updated_at}`); `KbError` becomes an HTTP `400` with a
+`{"detail": ...}` body (the REST analog of the MCP client's `Error: ...`).
+
+| REST endpoint | Action |
+|---------------|--------|
+| `GET /knowledge-base` | Return the KB markdown (creates an empty KB on first read). |
+| `PUT /knowledge-base` | Replace the entire KB — body `{"content": "..."}`. |
+| `PATCH /knowledge-base/append` | Append a note on its own line — body `{"text": "..."}`. |
+| `DELETE /knowledge-base` | Empty the KB content (keeps the row). |
+| `DELETE /knowledge-base/lines/{n}` | Delete a single line (1-based), keeping the rest. |
+| `DELETE /knowledge-base/file` | Delete the entire KB file — the whole row. |
+
+Run with `pip install -e ".[api]"` then `python -m kb_api` (Swagger UI at
+`http://127.0.0.1:8000/docs`; override host/port with `KB_API_HOST`/`KB_API_PORT`).
 
 ---
 
@@ -153,6 +215,10 @@ cp .env.example .env          # then edit .env with your real values
 # 3. Install and run
 pip install -e ".[mcp]"       # execution layer + FastMCP server
 python -m kb_mcp              # launch the MCP server (stdio)
+
+# ...or the REST server instead:
+pip install -e ".[api]"       # execution layer + FastAPI + uvicorn
+python -m kb_api             # launch the REST server (Swagger at /docs)
 ```
 
 Library use:
