@@ -127,35 +127,95 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     _closeSlashMenu();
   }
 
-  /// While the menu is open, intercept navigation keys before the TextField
-  /// acts on them; otherwise let everything through untouched.
+  /// Intercept keys before the TextField acts on them: navigation keys while
+  /// the slash menu is open, and Enter for list auto-continuation otherwise.
+  /// Everything else passes through untouched.
   KeyEventResult _handleEditorKey(FocusNode node, KeyEvent event) {
-    if (!_slashPortal.isShowing) return KeyEventResult.ignored;
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
     final key = event.logicalKey;
-    if (key == LogicalKeyboardKey.arrowDown) {
-      setState(() => _slashSelected =
-          (_slashSelected + 1).clamp(0, _slashFiltered.length - 1));
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.arrowUp) {
-      setState(() => _slashSelected =
-          (_slashSelected - 1).clamp(0, _slashFiltered.length - 1));
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter) {
-      if (_slashFiltered.isNotEmpty) {
-        _applySlashCommand(_slashFiltered[_slashSelected]);
+    final isEnter =
+        key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter;
+
+    if (_slashPortal.isShowing) {
+      if (key == LogicalKeyboardKey.arrowDown) {
+        setState(() => _slashSelected =
+            (_slashSelected + 1).clamp(0, _slashFiltered.length - 1));
+        return KeyEventResult.handled;
       }
-      return KeyEventResult.handled;
+      if (key == LogicalKeyboardKey.arrowUp) {
+        setState(() => _slashSelected =
+            (_slashSelected - 1).clamp(0, _slashFiltered.length - 1));
+        return KeyEventResult.handled;
+      }
+      if (isEnter) {
+        if (_slashFiltered.isNotEmpty) {
+          _applySlashCommand(_slashFiltered[_slashSelected]);
+        }
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.escape) {
+        setState(_closeSlashMenu);
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
     }
-    if (key == LogicalKeyboardKey.escape) {
-      setState(_closeSlashMenu);
-      return KeyEventResult.handled;
+
+    // Menu closed: plain Enter (not Shift+Enter) continues a list, if any.
+    if (isEnter && !HardwareKeyboard.instance.isShiftPressed) {
+      return _handleListContinuation();
     }
     return KeyEventResult.ignored;
+  }
+
+  /// On Enter inside a `-` bullet or `1.` numbered list item, insert the next
+  /// marker; on an empty item, clear the marker and leave a blank line (exit
+  /// the list). Returns [KeyEventResult.ignored] for non-list lines so the
+  /// TextField inserts a normal newline.
+  KeyEventResult _handleListContinuation() {
+    final sel = _controller.selection;
+    if (!sel.isValid || !sel.isCollapsed) return KeyEventResult.ignored;
+
+    final text = _controller.text;
+    final cursor = sel.baseOffset;
+    final lineStart = cursor > 0 ? text.lastIndexOf('\n', cursor - 1) + 1 : 0;
+    final nextNewline = text.indexOf('\n', cursor);
+    final lineEnd = nextNewline == -1 ? text.length : nextNewline;
+    final line = text.substring(lineStart, lineEnd);
+
+    final bullet = RegExp(r'^(\s*)-(\s+)(.*)$');
+    final numbered = RegExp(r'^(\s*)(\d+)\.(\s+)(.*)$');
+
+    final bm = bullet.firstMatch(line);
+    final nm = numbered.firstMatch(line);
+    if (bm == null && nm == null) return KeyEventResult.ignored;
+
+    final indent = (bm ?? nm)!.group(1)!;
+    final content = (bm != null ? bm.group(3) : nm!.group(4))!;
+
+    if (content.trim().isEmpty) {
+      // Empty item: clear the marker, leaving a blank line — exits the list.
+      _controller.value = TextEditingValue(
+        text: text.replaceRange(lineStart, lineEnd, ''),
+        selection: TextSelection.collapsed(offset: lineStart),
+      );
+      return KeyEventResult.handled;
+    }
+
+    final String marker;
+    if (bm != null) {
+      marker = '-${bm.group(2)}';
+    } else {
+      final n = int.parse(nm!.group(2)!);
+      marker = '${n + 1}.${nm.group(3)}';
+    }
+    final insert = '\n$indent$marker';
+    _controller.value = TextEditingValue(
+      text: text.replaceRange(cursor, cursor, insert),
+      selection: TextSelection.collapsed(offset: cursor + insert.length),
+    );
+    return KeyEventResult.handled;
   }
 
   /// Where to place the menu (field-local), anchored just below the `/`. Uses a
