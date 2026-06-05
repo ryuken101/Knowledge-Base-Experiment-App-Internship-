@@ -2,13 +2,15 @@
 
 A per-user **knowledge base (KB)** for an AI agent that manages a separate
 SurrealDB-backed **task manager** application. Each user has their own agent, and each
-agent has its own KB — a single freeform markdown ("Obsidian") file it reads and writes
-as persistent memory about how to manage that user's tasks. The agent reaches both the
-tasks and its KB over **MCP**.
+agent has its own KB — persistent memory about how to manage that user's tasks. The KB is a
+nested **Notion/Outline-style document tree** (folders + documents); the agent reaches both
+the tasks and its KB over **MCP**, and a **Flutter app** (`kb_flutter/`) is the human-facing
+editor. (An earlier single-markdown-file design is kept as a legacy surface.)
 
 > **TL;DR for newcomers:** the active, supported code is **`kb_backend/`** (Python +
-> SurrealDB + MCP). The **`KbApp/`** folder is an earlier C# prototype that has been
-> **superseded** and is kept only for reference. Start with [`kb_backend/`](#3-kb_backend--active-python--surrealdb--mcp).
+> SurrealDB + MCP) and **`kb_flutter/`** (the Flutter editor). The **`KbApp/`** folder is an
+> earlier C# prototype that has been **superseded** and is kept only for reference. Start
+> with [`kb_backend/`](#3-kb_backend--active-python--surrealdb--mcp).
 
 ---
 
@@ -19,11 +21,15 @@ There are **two separate systems** in play. Only one of them lives in this repo.
 | System | Where it lives | Role |
 |--------|----------------|------|
 | **Task manager app** | *Not in this repo* (described in the brief) | A Python CLI + MCP + REST app over SurrealDB that manages `task` / `activity` / `comment` records. The agent drives it over MCP. |
-| **Knowledge base** | **This repo, `kb_backend/`** | Stores one markdown file per user so the agent has durable notes/memory. Lives in the **same SurrealDB instance** as the task app and links to its `user` table. |
+| **Knowledge base** | **This repo, `kb_backend/`** | Stores each user's notes/memory as a nested document tree (plus a legacy single-file surface). Lives in the **same SurrealDB instance** as the task app and links to its `user` table. |
 
-The KB is deliberately **rudimentary**: one markdown blob per user, not a folder/document
-tree. An earlier, richer document-management prototype (`KbApp/`, C#) was built first and
-then dropped in favour of this simpler, agent-facing design.
+The KB now models a **nested folder/document tree** (`document` table, self-referencing
+`parent`): every node is a document, a *folder* is just a document with children, and each
+user sees their own **Personal** subtree plus a shared **Team** subtree. The original
+single-markdown-file design (`knowledge_base` table) is retained as a legacy surface. (An
+even earlier C# prototype, `KbApp/`, modelled folders via path strings; this tree supersedes
+both, unified on SurrealDB.) Single-user for now: the `owner` field is additive-ready
+structure, not yet an auth boundary.
 
 ```
 ┌─────────────┐        MCP         ┌──────────────────────┐
@@ -45,21 +51,26 @@ agent that already manages tasks can also read and update its own knowledge base
 .
 ├── README.md                  # this file
 ├── kb_backend/                # ★ ACTIVE: Python + SurrealDB + MCP knowledge base
-│   ├── schema.surql           #   complete fresh-install schema (task tables + knowledge_base)
+│   ├── schema.surql           #   fresh-install schema (task tables + knowledge_base + document)
 │   ├── reset.surql            #   wipe all records, keep the schema
 │   ├── kb_program/            #   execution layer (library only)
 │   │   ├── db.py              #     cached SurrealDB client, reads .env, signs in as root
-│   │   ├── models.py         #     KnowledgeBase dataclass + KbError
-│   │   └── program.py        #     KbCLI: get / set / append / clear
+│   │   ├── _common.py        #     shared helpers (query shapes, RecordID coercion, user seeding)
+│   │   ├── models.py         #     KnowledgeBase + Document dataclasses + KbError
+│   │   ├── program.py        #     KbCLI: get / set / append / clear (legacy single file)
+│   │   └── documents.py      #     DocumentCLI: the nested document tree (CRUD + move)
 │   ├── kb_mcp/                #   MCP server client
-│   │   ├── server.py         #     FastMCP tools, one per KbCLI method
+│   │   ├── server.py         #     FastMCP tools: KB tools + document-tree tools
 │   │   └── __main__.py       #     `python -m kb_mcp`
 │   ├── kb_api/                #   REST server client
-│   │   ├── server.py         #     FastAPI endpoints, one per KbCLI method
+│   │   ├── server.py         #     FastAPI endpoints: /knowledge-base* + /documents*
 │   │   └── __main__.py       #     `python -m kb_api`
 │   ├── pyproject.toml         #   package + optional [mcp] / [api] extras
 │   ├── .env.example           #   credential template
 │   └── README.md              #   quickstart for this package
+│
+├── kb_flutter/                # ★ ACTIVE: Flutter editor over the document tree
+│   └── lib/                   #   go_router + riverpod + dio; sidebar tree + markdown editor
 │
 └── KbApp/                      # ✗ LEGACY: C# .NET prototype, superseded (kept for reference)
     └── KbApp.Api/             #   ASP.NET Core Web API, EF Core + SQLite (Documents CRUD)
@@ -198,6 +209,39 @@ touched. Each endpoint returns the normalized KB object
 Run with `pip install -e ".[api]"` then `python -m kb_api` (Swagger UI at
 `http://127.0.0.1:8000/docs`; override host/port with `KB_API_HOST`/`KB_API_PORT`).
 
+### 3.5 Document tree (`DocumentCLI`, `document` table)
+
+The primary surface: a **nested folder/document tree**. One self-referencing table — a
+folder is just a document that holds children (`is_folder` is a UI/type hint):
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `title` | `string` (default `'Untitled'`) | Display name. |
+| `content` | `string` (default `''`) | The node's markdown (omitted from list responses). |
+| `parent` | `option<record<document>>` | Self-reference; `NONE` = top level. |
+| `owner` | `option<record<user>>` | `<user>` = Personal, `NONE` = shared **Team**. |
+| `is_folder` | `bool` | UI/type hint; lets empty folders exist. |
+| `position` | `int` | Sibling order (move/reorder renumbers `0..n`). |
+| `created_at` / `updated_at` | `datetime` | `updated_at` bumped on every write. |
+
+Each user sees their own Personal subtree (`owner == user`) plus the shared Team subtree
+(`owner is NONE`), both **seeded on first use**. `DocumentCLI` fetches the flat, owner-scoped
+row set and assembles/walks the tree in Python (no recursive SurrealQL); moves **reject
+cycles**, **renumber** destination siblings, and **cascade `owner`** across the Personal/Team
+boundary; delete is a **subtree cascade**. Single-user for now — owner filtering happens in
+code and becomes table `PERMISSIONS` when auth lands.
+
+The agent navigates the tree over MCP by **title path** (`Personal/Ideas/Roadmap`):
+`list_documents`, `read_document`, `write_document`, `create_document`, `rename_document`,
+`move_document`, `delete_document`. The REST surface (the Flutter app's backend) is
+`GET /documents`, `POST /documents`, `GET|PUT /documents/{id}`, `POST /documents/{id}/move`,
+`DELETE /documents/{id}`.
+
+The **Flutter app** (`kb_flutter/`, go_router + riverpod + dio) renders this as a
+drag-and-drop sidebar tree (create / rename / delete / move) beside a markdown editor with
+live preview, a slash-command menu, and list auto-continuation. Point it at the running REST
+API (`kKbApiBaseUrl`, default `http://127.0.0.1:8000`) and run `flutter run -d windows`.
+
 ---
 
 ## 4. Setup & run (`kb_backend`)
@@ -278,14 +322,16 @@ is **not wired into anything** — removing it is a safe follow-up.
 
 ## 7. Roadmap (out of scope for now)
 
-The schema is kept additive-ready for the staged brief:
+Done so far: the **nested document tree** (`document` table + `DocumentCLI` + MCP/REST
+surfaces) and the **Flutter frontend** over it (sidebar directory tree + markdown editor with
+live preview, slash menu and list auto-continuation). Still additive-ready for the rest of
+the brief:
 
-- **Stage 2 — version history.** Add a `knowledge_base_version` table
-  (`kb: record<knowledge_base>`, `content`, `created_at`, optional author) snapshotted on
-  each save; expose `list_versions` / `restore_version`.
-- **Stage 3 — multiple users / auth.** Create real `user` records and per-user access; the
-  `record<user>` link + unique index already support it.
-- **Flutter frontend** (go_router / riverpod / dio) — a markdown editor over the KB
-  (left = directory, right = current document, manual save), per the original brief.
+- **Stage 2 — version history.** Add a `*_version` table snapshotted on each save; expose
+  `list_versions` / `restore_version`.
+- **Stage 3 — real multi-user / auth.** Turn `owner` from in-code visibility filtering into
+  genuine per-owner Personal sections and an access-controlled Team area via table
+  `PERMISSIONS`; the `record<user>` links already model it.
+- **Tree polish.** Drag-move refinements, search, multi-select in the Flutter sidebar.
 - **Single MCP surface.** Fold `kb_program` / `kb_mcp` into the task app's
   `task_program` / `task_mcp` packages so the agent sees tasks + KB through one server.

@@ -12,10 +12,10 @@ user: pass `user_id` explicitly, or set the `KB_USER` env var (defaults to
 from __future__ import annotations
 
 import os
-from datetime import datetime
 
 from surrealdb import RecordID
 
+from ._common import coerce_rid, ensure_user, query_rows, to_str
 from .db import client
 from .models import KbError
 
@@ -107,56 +107,15 @@ class KbCLI:
         raw = user_id or self._default_user
         if not raw:
             raise KbError("No user specified and KB_USER is not set in the environment")
-        rid = self._user_rid(raw)
-        self._ensure_user(rid)
+        rid = coerce_rid(raw, "user")
+        ensure_user(self._client, rid)
         return rid
 
-    def _ensure_user(self, rid: RecordID) -> None:
-        """Seed a minimal user record if it doesn't exist, so the KB's
-        record<user> link is backed by a real row."""
-        if not self._client.select(rid):
-            name = str(rid).split(":", 1)[-1]
-            self._client.create(rid, {"name": name})
-
     def _fetch_row(self, rid: RecordID) -> dict | None:
-        rows = self._query_rows(
-            "SELECT * FROM knowledge_base WHERE user = $u LIMIT 1", {"u": rid}
+        rows = query_rows(
+            self._client, "SELECT * FROM knowledge_base WHERE user = $u LIMIT 1", {"u": rid}
         )
         return rows[0] if rows else None
-
-    def _query_rows(self, surql: str, vars: dict | None = None) -> list[dict]:
-        """Run a query and return a flat list of rows, tolerating both the
-        newer SDK shape (rows returned directly) and the older
-        {status, result} envelope shape."""
-        res = self._client.query(surql, vars or {})
-        if not isinstance(res, list):
-            return [res] if res is not None else []
-        if res and isinstance(res[0], dict) and "status" in res[0] and "result" in res[0]:
-            rows: list[dict] = []
-            for stmt in res:
-                result = stmt.get("result")
-                if isinstance(result, list):
-                    rows.extend(result)
-                elif result is not None:
-                    rows.append(result)
-            return rows
-        return res
-
-    @staticmethod
-    def _user_rid(value: str | RecordID) -> RecordID:
-        if isinstance(value, RecordID):
-            return value
-        if not isinstance(value, str) or not value.strip():
-            raise KbError(f"Malformed user id: {value!r}")
-        value = value.strip()
-        if ":" not in value:
-            return RecordID("user", value)
-        table, _, ident = value.partition(":")
-        if not table or not ident:
-            raise KbError(f"Malformed user id: {value!r}")
-        if table != "user":
-            raise KbError(f"Expected a user id (user:...), got {value!r}")
-        return RecordID("user", ident)
 
     def _normalize(self, raw: dict | None) -> dict:
         """Reproduce the client-facing dict contract: RecordID/datetime -> str,
@@ -164,16 +123,8 @@ class KbCLI:
         if not raw:
             return {"user_id": None, "content": "", "created_at": None, "updated_at": None}
         return {
-            "user_id": self._to_str(raw.get("user")),
+            "user_id": to_str(raw.get("user")),
             "content": raw.get("content") or "",
-            "created_at": self._to_str(raw.get("created_at")),
-            "updated_at": self._to_str(raw.get("updated_at")),
+            "created_at": to_str(raw.get("created_at")),
+            "updated_at": to_str(raw.get("updated_at")),
         }
-
-    @staticmethod
-    def _to_str(value: object) -> str | None:
-        if value is None:
-            return None
-        if isinstance(value, datetime):
-            return value.isoformat()
-        return str(value)

@@ -88,3 +88,29 @@ DEFINE FIELD IF NOT EXISTS created_at ON knowledge_base TYPE datetime DEFAULT ti
 DEFINE FIELD IF NOT EXISTS updated_at ON knowledge_base TYPE datetime DEFAULT time::now();
 
 DEFINE INDEX IF NOT EXISTS knowledge_base_user ON knowledge_base FIELDS user UNIQUE;
+
+-- ===========================================================================
+-- Document tree (Notion/Outline-style nested folders + documents)
+-- ===========================================================================
+
+-- A unified, self-referencing tree: every node is a `document`. A "folder" is
+-- just a document that holds children (is_folder is a UI/type hint, not a
+-- structural constraint -- a node may carry both content and children). `parent`
+-- is the self-reference (NONE = a top-level node); `owner` scopes a node to a
+-- user (Personal) or leaves it shared (NONE = the Team area). `position` orders
+-- siblings under the same parent. Single-user for now: there is no auth, so the
+-- owner field is additive-ready structure (see knowledge_base notes above).
+-- The backend assembles the tree from a flat, owner-scoped SELECT ordered by
+-- position -- no recursive query is needed for the small per-user trees here.
+DEFINE TABLE IF NOT EXISTS document SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS title      ON document TYPE string   DEFAULT 'Untitled';
+DEFINE FIELD IF NOT EXISTS content    ON document TYPE string   DEFAULT '';
+DEFINE FIELD IF NOT EXISTS parent     ON document TYPE option<record<document>>;
+DEFINE FIELD IF NOT EXISTS owner      ON document TYPE option<record<user>>;
+DEFINE FIELD IF NOT EXISTS is_folder  ON document TYPE bool     DEFAULT false;
+DEFINE FIELD IF NOT EXISTS position   ON document TYPE int      DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS created_at ON document TYPE datetime DEFAULT time::now();
+DEFINE FIELD IF NOT EXISTS updated_at ON document TYPE datetime DEFAULT time::now();
+
+DEFINE INDEX IF NOT EXISTS document_parent ON document FIELDS parent;
+DEFINE INDEX IF NOT EXISTS document_owner  ON document FIELDS owner;

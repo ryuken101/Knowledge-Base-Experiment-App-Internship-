@@ -3,12 +3,12 @@ import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../models/knowledge_base.dart';
-import '../providers/kb_providers.dart';
+import '../models/document.dart';
+import '../providers/document_providers.dart';
 import '../theme/app_theme.dart';
+import '../widgets/document_tree_panel.dart';
 import '../widgets/pill_button.dart';
 import '../widgets/slash_menu.dart';
-import '../widgets/toc_panel.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -26,7 +26,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   /// when it diverges from this.
   String _savedContent = '';
 
-  /// True while a save/clear/delete request is in flight.
+  /// The document whose content is currently seeded into the editor, so we only
+  /// re-seed when the selection actually changes to a different document.
+  String? _loadedDocId;
+
+  /// True while a save request is in flight.
   bool _mutating = false;
 
   // ---- Slash command menu ----
@@ -45,8 +49,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    // Rebuild preview, outline and the dirty indicator as the user types, and
-    // re-evaluate the slash trigger.
+    // Rebuild preview and the dirty indicator as the user types, and re-evaluate
+    // the slash trigger.
     _controller.addListener(_onEditorChanged);
   }
 
@@ -288,91 +292,79 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
-  Future<void> _save() =>
-      _runMutation(() => ref.read(kbProvider.notifier).save(_controller.text));
+  /// Save the current document's content (manual save).
+  Future<void> _save() async {
+    final id = ref.read(selectedDocumentIdProvider);
+    if (id == null) return;
+    await _runMutation(() async {
+      await ref.read(documentsProvider.notifier).updateContent(id, _controller.text);
+      if (!mounted) return;
+      setState(() => _savedContent = _controller.text);
+      // Refresh the cached content so a later reselect reads the saved version.
+      ref.invalidate(documentContentProvider(id));
+    });
+  }
 
-  Future<void> _clear() =>
-      _runMutation(() => ref.read(kbProvider.notifier).clear());
-
-  Future<void> _deleteFile() async {
-    final ok = await showDialog<bool>(
+  /// Gate switching to another document when the current one has unsaved edits.
+  /// Returns true to proceed; shows a Discard/Cancel dialog otherwise. Passed to
+  /// [DocumentTreePanel] so a document tap can ask before changing the selection.
+  Future<bool> _confirmSwitchAway(String targetId) async {
+    if (!_dirty || _loadedDocId == null || _loadedDocId == targetId) return true;
+    final discard = await showDialog<bool>(
           context: context,
           builder: (ctx) => AlertDialog(
-            title: const Text('Delete knowledge base file?'),
+            title: const Text('Discard unsaved changes?'),
             content: const Text(
-              'This removes the entire file. A fresh empty one is created the '
-              'next time it loads.',
+              'This document has unsaved edits. Switching will lose them. '
+              'Save first to keep them.',
             ),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(ctx, false),
                 child: const Text('Cancel'),
               ),
-              PillButton(
-                label: 'Delete',
+              TextButton(
                 onPressed: () => Navigator.pop(ctx, true),
+                child: Text('Discard', style: AppType.body(color: AppColors.primary)),
               ),
             ],
           ),
         ) ??
         false;
-    if (ok) {
-      await _runMutation(() => ref.read(kbProvider.notifier).deleteFile());
-    }
-  }
-
-  void _jumpToHeading(TocEntry entry) {
-    // Best-effort: scroll both panes proportionally to the heading's line.
-    final totalLines = '\n'.allMatches(_controller.text).length + 1;
-    final fraction = totalLines <= 1 ? 0.0 : entry.line / totalLines;
-    for (final c in [_editorScroll, _previewScroll]) {
-      if (c.hasClients) {
-        c.animateTo(
-          fraction * c.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 250),
-          curve: Curves.easeInOut,
-        );
-      }
-    }
+    return discard;
   }
 
   @override
   Widget build(BuildContext context) {
-    final state = ref.watch(kbProvider);
+    final docsAsync = ref.watch(documentsProvider);
+    final selectedId = ref.watch(selectedDocumentIdProvider);
 
-    // React to authoritative server updates (load / save / clear / delete) by
-    // re-seeding the editor to the new baseline.
-    ref.listen<AsyncValue<KnowledgeBase>>(kbProvider, (prev, next) {
-      next.whenOrNull(
-        data: (kb) {
-          if (kb.content != _savedContent) {
-            setState(() => _adoptServerContent(kb.content));
-          }
-        },
-      );
-    });
+    final docs = docsAsync.asData?.value;
+    Document? selectedDoc;
+    if (docs != null && selectedId != null) {
+      for (final d in docs) {
+        if (d.id == selectedId) {
+          selectedDoc = d;
+          break;
+        }
+      }
+    }
+    final editingDoc =
+        (selectedDoc != null && !selectedDoc.isFolder) ? selectedDoc : null;
 
-    final busy = state.isLoading || _mutating;
+    final busy = docsAsync.isLoading || _mutating;
+    final canSave = editingDoc != null && _dirty && !_mutating;
 
     return Scaffold(
       appBar: AppBar(
         titleSpacing: AppSpacing.lg,
-        title: const Text('Knowledge Base'),
+        title: Text(editingDoc?.title ?? 'Knowledge Base'),
         actions: [
-          if (_dirty) const _UnsavedBadge(),
+          if (editingDoc != null && _dirty) const _UnsavedBadge(),
           PillButton(
             label: 'Save',
             icon: Icons.save_outlined,
-            onPressed: (busy || !_dirty) ? null : _save,
-          ),
-          const SizedBox(width: AppSpacing.sm),
-          TextButton(
-            onPressed: busy ? null : _clear,
-            child: const Text('Clear'),
-          ),
-          TextButton(
-            onPressed: busy ? null : _deleteFile,
-            child: const Text('Delete'),
+            onPressed: canSave ? _save : null,
           ),
           const SizedBox(width: AppSpacing.lg),
         ],
@@ -387,16 +379,66 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               )
             : null,
       ),
-      body: state.when(
-        loading: () => const Center(
-          child: CircularProgressIndicator(color: AppColors.primary),
-        ),
-        error: (err, _) => _ErrorView(
-          message: '$err',
-          onRetry: () => ref.invalidate(kbProvider),
-        ),
-        data: (_) => _buildEditor(context),
+      body: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(
+            width: 300,
+            child: DocumentTreePanel(confirmSwitch: _confirmSwitchAway),
+          ),
+          const VerticalDivider(width: 1),
+          Expanded(child: _editorArea(docsAsync, selectedDoc, editingDoc)),
+        ],
       ),
+    );
+  }
+
+  Widget _editorArea(
+    AsyncValue<List<Document>> docsAsync,
+    Document? selectedDoc,
+    Document? editingDoc,
+  ) {
+    if (docsAsync.hasError && !docsAsync.hasValue) {
+      return _ErrorView(
+        message: '${docsAsync.error}',
+        onRetry: () => ref.invalidate(documentsProvider),
+      );
+    }
+    if (editingDoc != null) {
+      return ref.watch(documentContentProvider(editingDoc.id)).when(
+            loading: () => _loadedDocId == editingDoc.id
+                ? _buildEditor(context)
+                : const Center(
+                    child: CircularProgressIndicator(color: AppColors.primary)),
+            error: (err, _) => _ErrorView(
+              message: '$err',
+              onRetry: () =>
+                  ref.invalidate(documentContentProvider(editingDoc.id)),
+            ),
+            data: (doc) {
+              if (_loadedDocId != doc.id) {
+                // The editor still holds another document — (re)seed it for this
+                // one. Done post-frame (can't setState during build); a spinner
+                // shows for the frame so the previous content never flashes.
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (!mounted) return;
+                  if (_loadedDocId == doc.id) return; // already seeded
+                  if (ref.read(selectedDocumentIdProvider) != doc.id) return;
+                  setState(() {
+                    _loadedDocId = doc.id;
+                    _adoptServerContent(doc.content ?? '');
+                  });
+                });
+                return const Center(
+                    child: CircularProgressIndicator(color: AppColors.primary));
+              }
+              return _buildEditor(context);
+            },
+          );
+    }
+    return _EmptyEditor(
+      isFolder: selectedDoc?.isFolder ?? false,
+      name: selectedDoc?.title,
     );
   }
 
@@ -404,85 +446,67 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Left: outline.
-        SizedBox(
-          width: 248,
-          child: TocPanel(
-            entries: parseToc(_controller.text),
-            onTap: _jumpToHeading,
-          ),
-        ),
-        const VerticalDivider(width: 1),
-        // Right: editor + live preview, side by side.
         Expanded(
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Expanded(
-                child: _Pane(
-                  label: 'Markdown',
-                  background: AppColors.canvas,
-                  child: Focus(
-                    canRequestFocus: false,
-                    onKeyEvent: _handleEditorKey,
-                    child: OverlayPortal(
-                      controller: _slashPortal,
-                      overlayChildBuilder: (context) =>
-                          CompositedTransformFollower(
-                        link: _editorLink,
-                        showWhenUnlinked: false,
-                        offset: _slashMenuOffset(),
-                        child: Align(
-                          alignment: Alignment.topLeft,
-                          child: SlashMenu(
-                            commands: _slashFiltered,
-                            selectedIndex: _slashSelected,
-                            onSelected: _applySlashCommand,
-                          ),
-                        ),
-                      ),
-                      child: CompositedTransformTarget(
-                        key: _editorFieldKey,
-                        link: _editorLink,
-                        child: TextField(
-                          controller: _controller,
-                          scrollController: _editorScroll,
-                          maxLines: null,
-                          expands: true,
-                          textAlignVertical: TextAlignVertical.top,
-                          cursorColor: AppColors.primary,
-                          style: AppType.mono(color: AppColors.ink),
-                          decoration: InputDecoration(
-                            border: InputBorder.none,
-                            isCollapsed: true,
-                            hintText: '# Write markdown here…  (type / for commands)',
-                            hintStyle: AppType.mono(color: AppColors.inkMuted48),
-                          ),
-                        ),
-                      ),
+          child: _Pane(
+            label: 'Markdown',
+            background: AppColors.canvas,
+            child: Focus(
+              canRequestFocus: false,
+              onKeyEvent: _handleEditorKey,
+              child: OverlayPortal(
+                controller: _slashPortal,
+                overlayChildBuilder: (context) => CompositedTransformFollower(
+                  link: _editorLink,
+                  showWhenUnlinked: false,
+                  offset: _slashMenuOffset(),
+                  child: Align(
+                    alignment: Alignment.topLeft,
+                    child: SlashMenu(
+                      commands: _slashFiltered,
+                      selectedIndex: _slashSelected,
+                      onSelected: _applySlashCommand,
+                    ),
+                  ),
+                ),
+                child: CompositedTransformTarget(
+                  key: _editorFieldKey,
+                  link: _editorLink,
+                  child: TextField(
+                    controller: _controller,
+                    scrollController: _editorScroll,
+                    maxLines: null,
+                    expands: true,
+                    textAlignVertical: TextAlignVertical.top,
+                    cursorColor: AppColors.primary,
+                    style: AppType.mono(color: AppColors.ink),
+                    decoration: InputDecoration(
+                      border: InputBorder.none,
+                      isCollapsed: true,
+                      hintText: '# Write markdown here…  (type / for commands)',
+                      hintStyle: AppType.mono(color: AppColors.inkMuted48),
                     ),
                   ),
                 ),
               ),
-              const VerticalDivider(width: 1),
-              Expanded(
-                child: _Pane(
-                  label: 'Preview',
-                  background: AppColors.pearl,
-                  padded: false,
-                  child: Markdown(
-                    controller: _previewScroll,
-                    data: _controller.text.isEmpty
-                        ? '_Nothing to preview yet._'
-                        : _controller.text,
-                    selectable: true,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: AppSpacing.xl, vertical: AppSpacing.lg),
-                    styleSheet: buildMarkdownStyle(),
-                  ),
-                ),
-              ),
-            ],
+            ),
+          ),
+        ),
+        const VerticalDivider(width: 1),
+        Expanded(
+          child: _Pane(
+            label: 'Preview',
+            background: AppColors.pearl,
+            padded: false,
+            child: Markdown(
+              controller: _previewScroll,
+              data: _controller.text.isEmpty
+                  ? '_Nothing to preview yet._'
+                  : _controller.text,
+              selectable: true,
+              padding: const EdgeInsets.symmetric(
+                  horizontal: AppSpacing.xl, vertical: AppSpacing.lg),
+              styleSheet: buildMarkdownStyle(),
+            ),
           ),
         ),
       ],
@@ -529,6 +553,47 @@ class _Pane extends StatelessWidget {
                 : child,
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Shown in the editor area when nothing editable is selected: either no
+/// selection, or a folder (which holds documents rather than content).
+class _EmptyEditor extends StatelessWidget {
+  const _EmptyEditor({required this.isFolder, this.name});
+
+  final bool isFolder;
+  final String? name;
+
+  @override
+  Widget build(BuildContext context) {
+    final icon = isFolder ? Icons.folder_open_outlined : Icons.description_outlined;
+    final title = isFolder
+        ? '"${name ?? 'Folder'}" is a folder'
+        : 'No document selected';
+    final hint = isFolder
+        ? 'Open a document inside it, or use the ⋯ menu to add one.'
+        : 'Pick a document from the sidebar, or create one with the + buttons.';
+    return Container(
+      color: AppColors.canvas,
+      alignment: Alignment.center,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 360),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 40, color: AppColors.inkMuted48),
+            const SizedBox(height: AppSpacing.md),
+            Text(title, textAlign: TextAlign.center, style: AppType.bodyStrong()),
+            const SizedBox(height: AppSpacing.xs),
+            Text(
+              hint,
+              textAlign: TextAlign.center,
+              style: AppType.caption(color: AppColors.inkMuted48),
+            ),
+          ],
+        ),
       ),
     );
   }

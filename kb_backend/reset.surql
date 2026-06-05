@@ -6,6 +6,7 @@
 -- cascade to honor (unlike the old Postgres schema). Children first anyway, for
 -- readability.
 
+DELETE document;
 DELETE knowledge_base;
 DELETE comment;
 DELETE activity;
