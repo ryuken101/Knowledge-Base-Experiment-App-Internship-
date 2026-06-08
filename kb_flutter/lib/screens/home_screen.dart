@@ -1,6 +1,7 @@
+import 'dart:async';
+
+import 'package:appflowy_editor/appflowy_editor.dart' hide Document;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/document.dart';
@@ -8,7 +9,6 @@ import '../providers/document_providers.dart';
 import '../theme/app_theme.dart';
 import '../widgets/document_tree_panel.dart';
 import '../widgets/pill_button.dart';
-import '../widgets/slash_menu.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -18,261 +18,69 @@ class HomeScreen extends ConsumerStatefulWidget {
 }
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
-  final _controller = TextEditingController();
-  final _editorScroll = ScrollController();
-  final _previewScroll = ScrollController();
+  /// The live WYSIWYG editor state for the currently loaded document. Rebuilt
+  /// from markdown whenever the selection changes to a different document.
+  EditorState? _editorState;
+  EditorScrollController? _editorScrollController;
+  StreamSubscription<EditorTransactionValue>? _txnSub;
 
-  /// Last content known to be persisted on the server; the editor is "dirty"
-  /// when it diverges from this.
+  /// Markdown known to be persisted on the server (already passed through the
+  /// exporter, so an untouched document reads as clean). The editor is "dirty"
+  /// when its exported markdown diverges from this.
   String _savedContent = '';
+  bool _dirty = false;
 
   /// The document whose content is currently seeded into the editor, so we only
-  /// re-seed when the selection actually changes to a different document.
+  /// rebuild the editor when the selection actually changes to a different one.
   String? _loadedDocId;
 
   /// True while a save request is in flight.
   bool _mutating = false;
 
-  // ---- Slash command menu ----
-  // Anchors the floating menu to the editor field; the portal owns its overlay
-  // lifecycle so there is nothing to dispose.
-  final LayerLink _editorLink = LayerLink();
-  final GlobalKey _editorFieldKey = GlobalKey();
-  final OverlayPortalController _slashPortal = OverlayPortalController();
-
-  /// Index of the `/` that opened the menu (-1 when closed), the current
-  /// filtered command list, and the keyboard-highlighted row.
-  int _slashIndex = -1;
-  List<SlashCommand> _slashFiltered = const [];
-  int _slashSelected = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    // Rebuild preview and the dirty indicator as the user types, and re-evaluate
-    // the slash trigger.
-    _controller.addListener(_onEditorChanged);
-  }
-
-  void _onEditorChanged() {
-    setState(() {});
-    _updateSlashState();
-  }
-
-  /// Recompute whether a slash command menu should be open, based on the text
-  /// immediately before the (collapsed) caret. Triggers only when `/` sits at
-  /// line start or after whitespace, with a single non-whitespace token after
-  /// it — so URLs like `http://` never open the menu.
-  void _updateSlashState() {
-    final value = _controller.value;
-    final sel = value.selection;
-    if (!sel.isValid || !sel.isCollapsed) {
-      _closeSlashMenu();
-      return;
-    }
-    final cursor = sel.baseOffset;
-    final text = value.text;
-
-    // Walk back from the caret to the nearest `/`, bailing on whitespace.
-    var i = cursor - 1;
-    while (i >= 0) {
-      final ch = text[i];
-      if (ch == '/') break;
-      if (ch == ' ' || ch == '\n' || ch == '\t') {
-        i = -1;
-        break;
-      }
-      i--;
-    }
-    if (i < 0) {
-      _closeSlashMenu();
-      return;
-    }
-    // The `/` must start a token: at line start or preceded by whitespace.
-    if (i > 0) {
-      final prev = text[i - 1];
-      if (prev != ' ' && prev != '\n' && prev != '\t') {
-        _closeSlashMenu();
-        return;
-      }
-    }
-
-    final query = text.substring(i + 1, cursor);
-    final filtered = filterSlashCommands(query);
-    if (filtered.isEmpty) {
-      _closeSlashMenu();
-      return;
-    }
-
-    final wasOpen = _slashPortal.isShowing;
-    _slashIndex = i;
-    _slashFiltered = filtered;
-    _slashSelected = wasOpen ? _slashSelected.clamp(0, filtered.length - 1) : 0;
-    if (!wasOpen) _slashPortal.show();
-  }
-
-  void _closeSlashMenu() {
-    if (_slashPortal.isShowing) _slashPortal.hide();
-    _slashIndex = -1;
-    _slashFiltered = const [];
-    _slashSelected = 0;
-  }
-
-  /// Replace the `/query` token with the command's snippet and dismiss. Only
-  /// touches the editor text, so dirty-tracking and Save work unchanged.
-  void _applySlashCommand(SlashCommand command) {
-    if (_slashIndex < 0) return;
-    final cursor = _controller.selection.baseOffset;
-    if (cursor < _slashIndex) {
-      _closeSlashMenu();
-      return;
-    }
-    _controller.value = command.apply(_controller.text, _slashIndex, cursor);
-    _closeSlashMenu();
-  }
-
-  /// Intercept keys before the TextField acts on them: navigation keys while
-  /// the slash menu is open, and Enter for list auto-continuation otherwise.
-  /// Everything else passes through untouched.
-  KeyEventResult _handleEditorKey(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
-      return KeyEventResult.ignored;
-    }
-    final key = event.logicalKey;
-    final isEnter =
-        key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter;
-
-    if (_slashPortal.isShowing) {
-      if (key == LogicalKeyboardKey.arrowDown) {
-        setState(() => _slashSelected =
-            (_slashSelected + 1).clamp(0, _slashFiltered.length - 1));
-        return KeyEventResult.handled;
-      }
-      if (key == LogicalKeyboardKey.arrowUp) {
-        setState(() => _slashSelected =
-            (_slashSelected - 1).clamp(0, _slashFiltered.length - 1));
-        return KeyEventResult.handled;
-      }
-      if (isEnter) {
-        if (_slashFiltered.isNotEmpty) {
-          _applySlashCommand(_slashFiltered[_slashSelected]);
-        }
-        return KeyEventResult.handled;
-      }
-      if (key == LogicalKeyboardKey.escape) {
-        setState(_closeSlashMenu);
-        return KeyEventResult.handled;
-      }
-      return KeyEventResult.ignored;
-    }
-
-    // Menu closed: plain Enter (not Shift+Enter) continues a list, if any.
-    if (isEnter && !HardwareKeyboard.instance.isShiftPressed) {
-      return _handleListContinuation();
-    }
-    return KeyEventResult.ignored;
-  }
-
-  /// On Enter inside a `-` bullet or `1.` numbered list item, insert the next
-  /// marker; on an empty item, clear the marker and leave a blank line (exit
-  /// the list). Returns [KeyEventResult.ignored] for non-list lines so the
-  /// TextField inserts a normal newline.
-  KeyEventResult _handleListContinuation() {
-    final sel = _controller.selection;
-    if (!sel.isValid || !sel.isCollapsed) return KeyEventResult.ignored;
-
-    final text = _controller.text;
-    final cursor = sel.baseOffset;
-    final lineStart = cursor > 0 ? text.lastIndexOf('\n', cursor - 1) + 1 : 0;
-    final nextNewline = text.indexOf('\n', cursor);
-    final lineEnd = nextNewline == -1 ? text.length : nextNewline;
-    final line = text.substring(lineStart, lineEnd);
-
-    final bullet = RegExp(r'^(\s*)-(\s+)(.*)$');
-    final numbered = RegExp(r'^(\s*)(\d+)\.(\s+)(.*)$');
-
-    final bm = bullet.firstMatch(line);
-    final nm = numbered.firstMatch(line);
-    if (bm == null && nm == null) return KeyEventResult.ignored;
-
-    final indent = (bm ?? nm)!.group(1)!;
-    final content = (bm != null ? bm.group(3) : nm!.group(4))!;
-
-    if (content.trim().isEmpty) {
-      // Empty item: clear the marker, leaving a blank line — exits the list.
-      _controller.value = TextEditingValue(
-        text: text.replaceRange(lineStart, lineEnd, ''),
-        selection: TextSelection.collapsed(offset: lineStart),
-      );
-      return KeyEventResult.handled;
-    }
-
-    final String marker;
-    if (bm != null) {
-      marker = '-${bm.group(2)}';
-    } else {
-      final n = int.parse(nm!.group(2)!);
-      marker = '${n + 1}.${nm.group(3)}';
-    }
-    final insert = '\n$indent$marker';
-    _controller.value = TextEditingValue(
-      text: text.replaceRange(cursor, cursor, insert),
-      selection: TextSelection.collapsed(offset: cursor + insert.length),
-    );
-    return KeyEventResult.handled;
-  }
-
-  /// Where to place the menu (field-local), anchored just below the `/`. Uses a
-  /// TextPainter replica of the editor to find the caret pixel, accounts for the
-  /// field's internal scroll, and flips above the caret near the screen bottom.
-  Offset _slashMenuOffset() {
-    final box =
-        _editorFieldKey.currentContext?.findRenderObject() as RenderBox?;
-    final style = AppType.mono(color: AppColors.ink);
-    final lineHeight = (style.fontSize ?? 14) * (style.height ?? 1.0);
-    final width = box?.size.width ?? SlashMenu.width;
-
-    final text = _controller.text;
-    final clampedIndex = _slashIndex.clamp(0, text.length);
-    final painter = TextPainter(
-      textDirection: TextDirection.ltr,
-      text: TextSpan(text: text.substring(0, clampedIndex), style: style),
-    )..layout(maxWidth: width);
-    final caret =
-        painter.getOffsetForCaret(TextPosition(offset: clampedIndex), Rect.zero);
-
-    final caretViewportDy = caret.dy - _editorScroll.offset;
-    final maxLeft = (width - SlashMenu.width).clamp(0.0, double.infinity);
-    final left = caret.dx.clamp(0.0, maxLeft);
-
-    final menuHeight = SlashMenu.heightFor(_slashFiltered.length);
-    var top = caretViewportDy + lineHeight;
-    if (box != null) {
-      final globalTop = box.localToGlobal(Offset(0, top));
-      final screenHeight = MediaQuery.of(context).size.height;
-      if (globalTop.dy + menuHeight > screenHeight - 12) {
-        top = caretViewportDy - menuHeight - 4; // flip above the caret
-      }
-    }
-    return Offset(left, top);
-  }
-
   @override
   void dispose() {
-    _controller.dispose();
-    _editorScroll.dispose();
-    _previewScroll.dispose();
+    _disposeEditor();
     super.dispose();
   }
 
-  bool get _dirty => _controller.text != _savedContent;
+  /// Tear down the current editor (listener + controllers + state) before
+  /// building a new one or disposing the screen.
+  void _disposeEditor() {
+    _txnSub?.cancel();
+    _txnSub = null;
+    _editorScrollController?.dispose();
+    _editorScrollController = null;
+    _editorState?.dispose();
+    _editorState = null;
+  }
 
-  /// Adopt server content as the new baseline and reset the editor to it.
-  void _adoptServerContent(String content) {
-    _savedContent = content;
-    if (_controller.text != content) {
-      _controller.text = content;
+  /// Parse stored markdown into an [EditorState]. Empty/whitespace content
+  /// yields a blank document with one empty paragraph (AppFlowy needs at least
+  /// one node to edit into).
+  EditorState _stateFromMarkdown(String content) {
+    if (content.trim().isEmpty) {
+      return EditorState.blank(withInitialText: true);
     }
+    return EditorState(document: markdownToDocument(content));
+  }
+
+  /// Adopt [doc] into a fresh editor: build its state from markdown, normalize
+  /// the saved baseline through the exporter (so it isn't falsely dirty), and
+  /// listen for edits to drive the dirty indicator.
+  void _seedEditor(Document doc) {
+    _disposeEditor();
+    final state = _stateFromMarkdown(doc.content ?? '');
+    _editorState = state;
+    _editorScrollController = EditorScrollController(editorState: state);
+    _savedContent = documentToMarkdown(state.document);
+    _dirty = false;
+    _loadedDocId = doc.id;
+    _txnSub = state.transactionStream.listen((_) {
+      if (!mounted) return;
+      final md = documentToMarkdown(state.document);
+      final dirty = md != _savedContent;
+      if (dirty != _dirty) setState(() => _dirty = dirty);
+    });
   }
 
   /// Run a mutation, tracking busy state and surfacing failures as a snackbar
@@ -292,14 +100,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
-  /// Save the current document's content (manual save).
+  /// Save the current document's content (manual save): export the editor to
+  /// markdown and persist it.
   Future<void> _save() async {
     final id = ref.read(selectedDocumentIdProvider);
-    if (id == null) return;
+    final state = _editorState;
+    if (id == null || state == null) return;
     await _runMutation(() async {
-      await ref.read(documentsProvider.notifier).updateContent(id, _controller.text);
+      final md = documentToMarkdown(state.document);
+      await ref.read(documentsProvider.notifier).updateContent(id, md);
       if (!mounted) return;
-      setState(() => _savedContent = _controller.text);
+      setState(() {
+        _savedContent = md;
+        _dirty = false;
+      });
       // Refresh the cached content so a later reselect reads the saved version.
       ref.invalidate(documentContentProvider(id));
     });
@@ -417,17 +231,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ),
             data: (doc) {
               if (_loadedDocId != doc.id) {
-                // The editor still holds another document — (re)seed it for this
+                // The editor still holds another document — rebuild it for this
                 // one. Done post-frame (can't setState during build); a spinner
                 // shows for the frame so the previous content never flashes.
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   if (!mounted) return;
                   if (_loadedDocId == doc.id) return; // already seeded
                   if (ref.read(selectedDocumentIdProvider) != doc.id) return;
-                  setState(() {
-                    _loadedDocId = doc.id;
-                    _adoptServerContent(doc.content ?? '');
-                  });
+                  setState(() => _seedEditor(doc));
                 });
                 return const Center(
                     child: CircularProgressIndicator(color: AppColors.primary));
@@ -443,73 +254,45 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Widget _buildEditor(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Expanded(
-          child: _Pane(
-            label: 'Markdown',
-            background: AppColors.canvas,
-            child: Focus(
-              canRequestFocus: false,
-              onKeyEvent: _handleEditorKey,
-              child: OverlayPortal(
-                controller: _slashPortal,
-                overlayChildBuilder: (context) => CompositedTransformFollower(
-                  link: _editorLink,
-                  showWhenUnlinked: false,
-                  offset: _slashMenuOffset(),
-                  child: Align(
-                    alignment: Alignment.topLeft,
-                    child: SlashMenu(
-                      commands: _slashFiltered,
-                      selectedIndex: _slashSelected,
-                      onSelected: _applySlashCommand,
-                    ),
-                  ),
-                ),
-                child: CompositedTransformTarget(
-                  key: _editorFieldKey,
-                  link: _editorLink,
-                  child: TextField(
-                    controller: _controller,
-                    scrollController: _editorScroll,
-                    maxLines: null,
-                    expands: true,
-                    textAlignVertical: TextAlignVertical.top,
-                    cursorColor: AppColors.primary,
-                    style: AppType.mono(color: AppColors.ink),
-                    decoration: InputDecoration(
-                      border: InputBorder.none,
-                      isCollapsed: true,
-                      hintText: '# Write markdown here…  (type / for commands)',
-                      hintStyle: AppType.mono(color: AppColors.inkMuted48),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
+    final state = _editorState;
+    final scroll = _editorScrollController;
+    if (state == null || scroll == null) {
+      return const Center(
+          child: CircularProgressIndicator(color: AppColors.primary));
+    }
+    return _Pane(
+      label: 'Editor',
+      background: AppColors.canvas,
+      padded: false,
+      child: AppFlowyEditor(
+        editorState: state,
+        editorScrollController: scroll,
+        editorStyle: _editorStyle(),
+        blockComponentBuilders: standardBlockComponentBuilderMap,
+        characterShortcutEvents: standardCharacterShortcutEvents,
+        commandShortcutEvents: standardCommandShortcutEvents,
+      ),
+    );
+  }
+
+  /// Editor styling matched to the design system: Action Blue caret/selection,
+  /// 17px reading body, monospace inline code.
+  EditorStyle _editorStyle() {
+    return EditorStyle.desktop(
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.xl, vertical: AppSpacing.lg),
+      cursorColor: AppColors.primary,
+      selectionColor: AppColors.primary.withValues(alpha: 0.20),
+      textStyleConfiguration: TextStyleConfiguration(
+        text: AppType.body(),
+        bold: const TextStyle(fontWeight: FontWeight.w600),
+        italic: const TextStyle(fontStyle: FontStyle.italic),
+        href: const TextStyle(
+          color: AppColors.primary,
+          decoration: TextDecoration.underline,
         ),
-        const VerticalDivider(width: 1),
-        Expanded(
-          child: _Pane(
-            label: 'Preview',
-            background: AppColors.pearl,
-            padded: false,
-            child: Markdown(
-              controller: _previewScroll,
-              data: _controller.text.isEmpty
-                  ? '_Nothing to preview yet._'
-                  : _controller.text,
-              selectable: true,
-              padding: const EdgeInsets.symmetric(
-                  horizontal: AppSpacing.xl, vertical: AppSpacing.lg),
-              styleSheet: buildMarkdownStyle(),
-            ),
-          ),
-        ),
-      ],
+        code: AppType.mono(color: AppColors.inkMuted80),
+      ),
     );
   }
 }

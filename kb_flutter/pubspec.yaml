@@ -39,6 +39,15 @@ dependencies:
   riverpod: ^3.2.1
   dio: ^5.9.2
   flutter_markdown: ^0.7.7+1
+  # Vendored copy of appflowy_editor main (commit 6fbe7ba) with a one-line local
+  # patch: the published 6.2.0 AND upstream main both predate Flutter 3.44's
+  # TextInputClient.onFocusReceived, so they fail to build. The patch is in
+  # third_party/appflowy_editor/.../delta_input_service.dart. Replace this with a
+  # pub version once a published appflowy_editor supports Flutter 3.44.
+  appflowy_editor:
+    path: third_party/appflowy_editor
+  flutter_localizations:
+    sdk: flutter
 
 dev_dependencies:
   flutter_test:
