@@ -37,6 +37,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   /// True while a save request is in flight.
   bool _mutating = false;
 
+  /// DESIGN.md-themed block builders and the Action-Blue slash menu, built once
+  /// per screen (they depend only on static design tokens).
+  late final Map<String, BlockComponentBuilder> _builders = _blockBuilders();
+  late final List<CharacterShortcutEvent> _shortcuts = _characterShortcuts();
+
   @override
   void dispose() {
     _disposeEditor();
@@ -268,8 +273,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         editorState: state,
         editorScrollController: scroll,
         editorStyle: _editorStyle(),
-        blockComponentBuilders: standardBlockComponentBuilderMap,
-        characterShortcutEvents: standardCharacterShortcutEvents,
+        blockComponentBuilders: _builders,
+        characterShortcutEvents: _shortcuts,
         commandShortcutEvents: standardCommandShortcutEvents,
       ),
     );
@@ -293,6 +298,109 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ),
         code: AppType.mono(color: AppColors.inkMuted80),
       ),
+    );
+  }
+
+  /// Standard block builders with the visual layer mapped to DESIGN.md: the
+  /// Apple display ladder on headings, a hairline quote bar + muted quote text,
+  /// a hairline divider, and a muted "Type /" placeholder. Block body text is
+  /// left untouched — it already inherits 17px near-black from [_editorStyle].
+  Map<String, BlockComponentBuilder> _blockBuilders() {
+    // A muted placeholder for empty blocks (replaces AppFlowy's Colors.grey).
+    TextStyle muted(Node node, {TextSpan? textSpan}) =>
+        AppType.body(color: AppColors.inkMuted48);
+
+    return {
+      ...standardBlockComponentBuilderMap,
+      HeadingBlockKeys.type: HeadingBlockComponentBuilder(
+        textStyleBuilder: _headingStyle,
+        configuration: BlockComponentConfiguration(
+          padding: (_) => const EdgeInsets.only(
+              top: AppSpacing.md, bottom: AppSpacing.xxs),
+          placeholderText: (node) =>
+              'Heading ${node.attributes[HeadingBlockKeys.level] ?? 1}',
+          placeholderTextStyle: muted,
+        ),
+      ),
+      QuoteBlockKeys.type: QuoteBlockComponentBuilder(
+        configuration: BlockComponentConfiguration(
+          textStyle: (_, {textSpan}) =>
+              AppType.body(color: AppColors.inkMuted80),
+          placeholderText: (_) => 'Quote',
+          placeholderTextStyle: muted,
+        ),
+        // Replace AppFlowy's hardcoded teal bar with a design-system hairline.
+        // Mirrors the stock _QuoteIcon layout so the bar height/alignment match.
+        iconBuilder: (context, node) => Container(
+          alignment: Alignment.center,
+          constraints: const BoxConstraints(minWidth: 26, minHeight: 22),
+          padding: const EdgeInsets.only(right: 8.0),
+          child: Container(width: 3, color: AppColors.hairline),
+        ),
+      ),
+      DividerBlockKeys.type: DividerBlockComponentBuilder(
+        lineColor: AppColors.hairline,
+        configuration: BlockComponentConfiguration(
+          padding: (_) => const EdgeInsets.symmetric(vertical: AppSpacing.xs),
+        ),
+      ),
+      ParagraphBlockKeys.type: ParagraphBlockComponentBuilder(
+        configuration: BlockComponentConfiguration(
+          placeholderText: (_) => "Type '/' for commands",
+          placeholderTextStyle: muted,
+        ),
+      ),
+    };
+  }
+
+  /// The Apple "tight" heading ladder from [AppType], stepping down by level.
+  TextStyle _headingStyle(int level) {
+    switch (level) {
+      case 1:
+        return AppType.displayMd();
+      case 2:
+        return AppType.tagline();
+      case 3:
+        return AppType.bodyStrong();
+      case 4:
+        return AppType.bodyStrong(color: AppColors.inkMuted80);
+      case 5:
+        return AppType.captionStrong();
+      default:
+        return AppType.captionStrong(color: AppColors.inkMuted48);
+    }
+  }
+
+  /// The standard character shortcuts with the built-in slash command swapped
+  /// for one carrying the design-system [SelectionMenuStyle]. All other default
+  /// insert actions (`standardSelectionMenuItems`) are preserved.
+  List<CharacterShortcutEvent> _characterShortcuts() {
+    return [
+      for (final e in standardCharacterShortcutEvents)
+        if (e != slashCommand) e,
+      customSlashCommand(standardSelectionMenuItems, style: _menuStyle()),
+    ];
+  }
+
+  /// Slash-menu palette: white surface, near-black ink, a single Action-Blue
+  /// selection highlight, hairline dividers — every stock teal accent removed.
+  SelectionMenuStyle _menuStyle() {
+    return SelectionMenuStyle(
+      selectionMenuBackgroundColor: AppColors.canvas,
+      selectionMenuItemTextColor: AppColors.ink,
+      selectionMenuItemIconColor: AppColors.inkMuted80,
+      selectionMenuItemSelectedTextColor: AppColors.primary,
+      selectionMenuItemSelectedIconColor: AppColors.primary,
+      selectionMenuItemSelectedColor: AppColors.primary.withValues(alpha: 0.10),
+      selectionMenuUnselectedLabelColor: AppColors.inkMuted48,
+      selectionMenuDividerColor: AppColors.hairline,
+      selectionMenuLinkBorderColor: AppColors.hairline,
+      selectionMenuInvalidLinkColor: const Color(0xFFB00020),
+      selectionMenuButtonColor: AppColors.primary,
+      selectionMenuButtonTextColor: AppColors.ink,
+      selectionMenuButtonIconColor: AppColors.inkMuted80,
+      selectionMenuButtonBorderColor: AppColors.hairline,
+      selectionMenuTabIndicatorColor: AppColors.primary,
     );
   }
 }
