@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -41,10 +43,31 @@ class _DocumentTreePanelState extends ConsumerState<DocumentTreePanel> {
   String? _renamingId;
   final _renameController = TextEditingController();
 
+  /// Sidebar search box state. Keystrokes are debounced before being written to
+  /// [searchQueryProvider] so we don't fire a request on every character.
+  final _searchController = TextEditingController();
+  Timer? _searchDebounce;
+
   @override
   void dispose() {
     _renameController.dispose();
+    _searchController.dispose();
+    _searchDebounce?.cancel();
     super.dispose();
+  }
+
+  void _onSearchChanged(String value) {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 250), () {
+      if (!mounted) return;
+      ref.read(searchQueryProvider.notifier).update(value);
+    });
+  }
+
+  void _clearSearch() {
+    _searchDebounce?.cancel();
+    _searchController.clear();
+    ref.read(searchQueryProvider.notifier).update('');
   }
 
   // ---- flattening ------------------------------------------------------
@@ -213,6 +236,7 @@ class _DocumentTreePanelState extends ConsumerState<DocumentTreePanel> {
   Widget build(BuildContext context) {
     final docsAsync = ref.watch(documentsProvider);
     final selectedId = ref.watch(selectedDocumentIdProvider);
+    final searching = ref.watch(searchQueryProvider).trim().isNotEmpty;
 
     return Container(
       color: AppColors.parchment,
@@ -220,25 +244,163 @@ class _DocumentTreePanelState extends ConsumerState<DocumentTreePanel> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _header(),
+          _searchField(searching),
           const Divider(height: 1, thickness: 1, color: AppColors.hairline),
           Expanded(
-            child: docsAsync.when(
-              loading: () => const Center(
-                child: SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
-                ),
-              ),
-              error: (err, _) => Padding(
-                padding: const EdgeInsets.all(AppSpacing.lg),
-                child: Text('Could not load documents.\n$err',
-                    style: AppType.caption(color: AppColors.inkMuted48)),
-              ),
-              data: (docs) => _tree(docs, selectedId),
-            ),
+            child: searching
+                ? _searchResults(selectedId)
+                : docsAsync.when(
+                    loading: () => const Center(
+                      child: SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: AppColors.primary),
+                      ),
+                    ),
+                    error: (err, _) => Padding(
+                      padding: const EdgeInsets.all(AppSpacing.lg),
+                      child: Text('Could not load documents.\n$err',
+                          style: AppType.caption(color: AppColors.inkMuted48)),
+                    ),
+                    data: (docs) => _tree(docs, selectedId),
+                  ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// Pill-shaped search box (DESIGN.md `search-input`). Typing swaps the tree for
+  /// results; the × clears back to the tree.
+  Widget _searchField(bool searching) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+          AppSpacing.lg, 0, AppSpacing.lg, AppSpacing.sm),
+      child: TextField(
+        controller: _searchController,
+        onChanged: _onSearchChanged,
+        style: AppType.body(),
+        cursorColor: AppColors.primary,
+        decoration: InputDecoration(
+          isDense: true,
+          hintText: 'Search documents',
+          hintStyle: AppType.body(color: AppColors.inkMuted48),
+          prefixIcon:
+              const Icon(Icons.search, size: 18, color: AppColors.inkMuted48),
+          prefixIconConstraints:
+              const BoxConstraints(minWidth: 38, minHeight: 38),
+          suffixIcon: searching
+              ? IconButton(
+                  tooltip: 'Clear',
+                  iconSize: 16,
+                  splashRadius: 16,
+                  color: AppColors.inkMuted48,
+                  icon: const Icon(Icons.close),
+                  onPressed: _clearSearch,
+                )
+              : null,
+          filled: true,
+          fillColor: AppColors.canvas,
+          contentPadding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.sm, vertical: AppSpacing.sm),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(AppRadii.pill),
+            borderSide: const BorderSide(color: AppColors.hairline),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(AppRadii.pill),
+            borderSide: const BorderSide(color: AppColors.primary),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// The flat results list for the current query (loading / error / empty / hits).
+  Widget _searchResults(String? selectedId) {
+    return ref.watch(searchResultsProvider).when(
+          loading: () => const Center(
+            child: SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(
+                  strokeWidth: 2, color: AppColors.primary),
+            ),
+          ),
+          error: (err, _) => Padding(
+            padding: const EdgeInsets.all(AppSpacing.lg),
+            child: Text('Search failed.\n$err',
+                style: AppType.caption(color: AppColors.inkMuted48)),
+          ),
+          data: (results) {
+            if (results.isEmpty) {
+              return Padding(
+                padding: const EdgeInsets.all(AppSpacing.lg),
+                child: Text('No documents match.',
+                    style: AppType.caption(color: AppColors.inkMuted48)),
+              );
+            }
+            return ListView.builder(
+              padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
+              itemCount: results.length,
+              itemBuilder: (context, i) =>
+                  _searchResultRow(results[i], selectedId),
+            );
+          },
+        );
+  }
+
+  /// A single search hit: icon + title + an optional muted snippet. Tap reuses
+  /// [_select] so the unsaved-edit guard still runs.
+  Widget _searchResultRow(Document doc, String? selectedId) {
+    final selected = selectedId == doc.id;
+    final snippet = doc.snippet;
+    return InkWell(
+      onTap: () => _select(doc),
+      child: Container(
+        color: selected ? AppColors.primary.withValues(alpha: 0.08) : null,
+        padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.lg, vertical: AppSpacing.xs),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Icon(
+                doc.isFolder
+                    ? Icons.folder_outlined
+                    : Icons.description_outlined,
+                size: 16,
+                color: selected ? AppColors.primary : AppColors.inkMuted48,
+              ),
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    doc.title.isEmpty ? 'Untitled' : doc.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppType.captionStrong(
+                        color: selected ? AppColors.primary : AppColors.ink),
+                  ),
+                  if (snippet != null && snippet.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      snippet,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppType.caption(color: AppColors.inkMuted48),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

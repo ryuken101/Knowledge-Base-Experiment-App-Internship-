@@ -65,3 +65,23 @@ class SelectedDocumentId extends Notifier<String?> {
 final documentContentProvider = FutureProvider.family<Document, String>((ref, id) {
   return ref.read(documentApiProvider).read(id);
 });
+
+/// The current sidebar search text (empty = not searching, show the tree). The
+/// panel debounces keystrokes before writing here.
+final searchQueryProvider =
+    NotifierProvider<SearchQuery, String>(SearchQuery.new);
+
+class SearchQuery extends Notifier<String> {
+  @override
+  String build() => '';
+
+  void update(String value) => state = value;
+}
+
+/// Search results for the current [searchQueryProvider]; empty list for a blank
+/// query (so no request fires until the user actually types).
+final searchResultsProvider = FutureProvider.autoDispose<List<Document>>((ref) async {
+  final q = ref.watch(searchQueryProvider).trim();
+  if (q.isEmpty) return const [];
+  return ref.read(documentApiProvider).search(q);
+});

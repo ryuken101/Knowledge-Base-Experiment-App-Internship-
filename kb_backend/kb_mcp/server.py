@@ -126,6 +126,25 @@ def read_document(path: str) -> str:
 
 
 @mcp.tool()
+def search_documents(query: str, limit: int = 20) -> str:
+    """Find documents by a keyword in their title or content (case-insensitive).
+    Use this to recall what you've written before instead of reading the whole
+    tree. Returns one line per hit — the title and, when the match was in the
+    body, a short snippet. Then call read_document with the matching path."""
+    try:
+        hits = _docs().search_documents(query, limit=limit)
+        if not hits:
+            return "No matches."
+        lines = []
+        for h in hits:
+            snippet = h.get("snippet")
+            lines.append(f"- {h['title']}" + (f" — {snippet}" if snippet else ""))
+        return "\n".join(lines)
+    except KbError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
 def write_document(path: str, content: str) -> str:
     """Replace the markdown content of the document at `path` (slash-separated
     title path). Overwrites the whole document's content."""

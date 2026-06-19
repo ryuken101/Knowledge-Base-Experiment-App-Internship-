@@ -27,6 +27,18 @@ class DocumentApi {
         .toList();
   }
 
+  /// GET /documents/search?q= — documents matching [query] by title/content,
+  /// each with a `snippet` excerpt. Returns [] for a blank query.
+  Future<List<Document>> search(String query) async {
+    final res = await _dio.get<List<dynamic>>(
+      '/documents/search',
+      queryParameters: {'q': query},
+    );
+    return (res.data ?? const [])
+        .map((e) => Document.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
   /// GET /documents/{id} — a single document including its markdown content.
   Future<Document> read(String id) async {
     final res = await _dio.get<Map<String, dynamic>>('/documents/$id');

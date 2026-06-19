@@ -15,6 +15,7 @@ class Document {
     this.content,
     this.createdAt,
     this.updatedAt,
+    this.snippet,
   });
 
   final String id;
@@ -27,6 +28,10 @@ class Document {
   final String? createdAt;
   final String? updatedAt;
 
+  /// Search-only: an excerpt around the matched text, populated by
+  /// `/documents/search`. Null everywhere else (tree/list/read).
+  final String? snippet;
+
   factory Document.fromJson(Map<String, dynamic> json) {
     return Document(
       id: json['id'] as String,
@@ -38,6 +43,7 @@ class Document {
       content: json['content'] as String?,
       createdAt: json['created_at'] as String?,
       updatedAt: json['updated_at'] as String?,
+      snippet: json['snippet'] as String?,
     );
   }
 }

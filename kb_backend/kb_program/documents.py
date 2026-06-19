@@ -65,6 +65,61 @@ class DocumentCLI:
             raise KbError(f"Document not found: {doc_id}")
         return self._normalize(row, include_content=True)
 
+    def search_documents(
+        self, query: str, user_id: str | None = None, limit: int = 20
+    ) -> list[dict]:
+        """Case-insensitive substring search over the user's visible documents by
+        title and content. Each hit is a metadata dict (as `list_documents`) plus
+        a `snippet` — an excerpt around the first content match, or None when the
+        term only matched the title. Title matches rank above content-only ones.
+
+        Tier-1 (in-Python) search: it reuses `_visible_rows`, so it's owner-scoped
+        and needs no index. Swap the body for SurrealDB full-text search later
+        without changing this signature or the callers."""
+        q = (query or "").strip()
+        if not q:
+            return []
+        needle = q.lower()
+        user_rid = self._resolve_user(user_id)
+        self._ensure_sections(user_rid)
+        rows = self._visible_rows(user_rid)
+
+        hits: list[dict] = []
+        for r in rows:
+            title = r.get("title") or ""
+            content = r.get("content") or ""
+            in_title = needle in title.lower()
+            in_content = needle in content.lower()
+            if not (in_title or in_content):
+                continue
+            out = self._normalize(r, include_content=False)
+            out["snippet"] = self._snippet(content, q) if in_content else None
+            # Title hits sort before content-only hits; then alphabetical.
+            out["_rank"] = 0 if in_title else 1
+            hits.append(out)
+
+        hits.sort(key=lambda h: (h["_rank"], (h["title"] or "").lower()))
+        for h in hits:
+            h.pop("_rank", None)
+        return hits[:limit]
+
+    @staticmethod
+    def _snippet(content: str, query: str, *, window: int = 60) -> str | None:
+        """A single-line excerpt of `content` around the first case-insensitive
+        match of `query`, padded by ~`window` chars each side and elided with `…`
+        when truncated. Returns None if the query isn't in the content."""
+        idx = content.lower().find(query.lower())
+        if idx < 0:
+            return None
+        start = max(0, idx - window)
+        end = min(len(content), idx + len(query) + window)
+        excerpt = " ".join(content[start:end].split())
+        if start > 0:
+            excerpt = "… " + excerpt
+        if end < len(content):
+            excerpt = excerpt + " …"
+        return excerpt
+
     def create_document(
         self,
         title: str | None = None,

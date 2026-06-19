@@ -84,6 +84,10 @@ class DocumentOut(BaseModel):
     updated_at: str | None = None
 
 
+class DocumentSearchOut(DocumentOut):
+    snippet: str | None = None  # search-only excerpt; None for title-only hits
+
+
 class CreateDocumentRequest(BaseModel):
     title: str | None = None
     parent_id: str | None = None
@@ -177,6 +181,17 @@ def list_documents() -> list[dict]:
     ordered by position. The client assembles the tree from `parent_id`."""
     try:
         return _docs().list_documents()
+    except KbError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/documents/search", response_model=list[DocumentSearchOut])
+def search_documents(q: str, limit: int = 20) -> list[dict]:
+    """Search visible documents by title/content (case-insensitive substring).
+    Each hit carries a `snippet` excerpt; title matches rank first. Declared
+    before `/documents/{doc_id:path}` so the greedy path route can't capture it."""
+    try:
+        return _docs().search_documents(q, limit=limit)
     except KbError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
