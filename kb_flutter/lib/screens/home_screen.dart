@@ -276,6 +276,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         blockComponentBuilders: _builders,
         characterShortcutEvents: _shortcuts,
         commandShortcutEvents: standardCommandShortcutEvents,
+        // Keep the doc non-empty and always end in an editable paragraph, so you
+        // can type after inserting a trailing image/divider (a non-text block).
+        documentRules: const [
+          AtLeastOneEditableNodeRule(),
+          _EnsureTrailingEditableNodeRule(),
+        ],
       ),
     );
   }
@@ -378,8 +384,73 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return [
       for (final e in standardCharacterShortcutEvents)
         if (e != slashCommand) e,
-      customSlashCommand(standardSelectionMenuItems, style: _menuStyle()),
+      customSlashCommand(_slashMenuItems(), style: _menuStyle()),
     ];
+  }
+
+  /// The standard slash items with the stock Image item (which opens a local
+  /// file picker — local paths can't sync to the agent/other devices and break
+  /// the markdown round-trip) replaced by a URL-only image inserter.
+  List<SelectionMenuItem> _slashMenuItems() {
+    return [
+      for (final item in standardSelectionMenuItems)
+        if (item.name.toLowerCase() != 'image') item,
+      _urlImageMenuItem(),
+    ];
+  }
+
+  SelectionMenuItem _urlImageMenuItem() {
+    return SelectionMenuItem(
+      getName: () => 'Image',
+      keywords: const ['image', 'img', 'picture', 'photo'],
+      icon: (editorState, isSelected, style) => Icon(
+        Icons.image_outlined,
+        size: 18,
+        color: isSelected
+            ? style.selectionMenuItemSelectedIconColor
+            : style.selectionMenuItemIconColor,
+      ),
+      handler: (editorState, _, _) {
+        // Capture the selection now; the dialog steals focus before insert.
+        _promptImageUrl(editorState, editorState.selection);
+      },
+    );
+  }
+
+  /// Ask for an image URL and insert it. URLs round-trip cleanly through the
+  /// markdown KB and are visible to the agent and on any device.
+  Future<void> _promptImageUrl(EditorState editorState, Selection? at) async {
+    final controller = TextEditingController();
+    final url = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Insert image'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          keyboardType: TextInputType.url,
+          decoration: const InputDecoration(
+            hintText: 'https://example.com/image.png',
+          ),
+          onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: Text('Insert', style: AppType.body(color: AppColors.primary)),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (url == null || url.isEmpty) return;
+    // Restore the editor selection the dialog displaced, then insert.
+    if (at != null) editorState.selection = at;
+    await editorState.insertImageNode(url);
   }
 
   /// Slash-menu palette: white surface, near-black ink, a single Action-Blue
@@ -402,6 +473,38 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       selectionMenuButtonBorderColor: AppColors.hairline,
       selectionMenuTabIndicatorColor: AppColors.primary,
     );
+  }
+}
+
+/// Ensures the document always ends in an editable (text) block. AppFlowy's
+/// image/divider blocks carry no `delta` and can't hold a cursor, so when one is
+/// the *last* node there's nowhere to type — this appends an empty paragraph and
+/// drops the caret into it. Pairs with [AtLeastOneEditableNodeRule] (which only
+/// covers a completely empty document).
+class _EnsureTrailingEditableNodeRule extends DocumentRule {
+  const _EnsureTrailingEditableNodeRule();
+
+  @override
+  bool shouldApply({
+    required EditorState editorState,
+    required EditorTransactionValue value,
+  }) {
+    if (value.$1 != TransactionTime.after) return false;
+    final children = editorState.document.root.children;
+    if (children.isEmpty) return false; // AtLeastOneEditableNodeRule handles this
+    return children.last.delta == null; // last node is a non-text/void block
+  }
+
+  @override
+  Future<void> apply({
+    required EditorState editorState,
+    required EditorTransactionValue value,
+  }) async {
+    final path = [editorState.document.root.children.length];
+    final transaction = editorState.transaction
+      ..insertNode(path, paragraphNode())
+      ..afterSelection = Selection.collapsed(Position(path: path));
+    editorState.apply(transaction);
   }
 }
 

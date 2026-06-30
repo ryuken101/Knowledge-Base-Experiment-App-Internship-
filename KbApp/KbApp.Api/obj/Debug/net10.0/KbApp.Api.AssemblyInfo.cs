@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("KbApp.Api")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+3b034cf8e948faec208afb5ec8a0b4416dbfd16c")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d2a281320cf6085fdb686b25081029eb64f5a3dd")]
 [assembly: System.Reflection.AssemblyProductAttribute("KbApp.Api")]
 [assembly: System.Reflection.AssemblyTitleAttribute("KbApp.Api")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
