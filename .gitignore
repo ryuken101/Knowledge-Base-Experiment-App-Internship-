@@ -19,14 +19,18 @@ eggs/
 lib/
 lib64/
 !kb_flutter/lib/
+!kb_flutter/third_party/appflowy_editor/lib/
 parts/
 sdist/
 var/
 wheels/
 *.egg-info/
-# NOTE: the bare `lib/` below is the Python build-output ignore. It is
-# unanchored, so it also matches the Flutter app's source at kb_flutter/lib/ —
-# the negation further down re-includes that. Keep them together.
+# NOTE: the bare `lib/` above is the Python build-output ignore. It is
+# unanchored, so it also matches Flutter source dirs named `lib/` —
+# specifically the app at kb_flutter/lib/ AND the vendored (patched) AppFlowy
+# package at kb_flutter/third_party/appflowy_editor/lib/. The two negations
+# above re-include both; without them a fresh clone can't build (pubspec.yaml
+# has a `path:` dep on that vendored package). Keep them together.
 .installed.cfg
 *.egg
 pip-log.txt
