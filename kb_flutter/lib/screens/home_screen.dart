@@ -447,10 +447,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       ),
     );
     controller.dispose();
-    if (url == null || url.isEmpty) return;
+    final normalized = _normalizeImageUrl(url);
+    if (normalized == null) return;
     // Restore the editor selection the dialog displaced, then insert.
     if (at != null) editorState.selection = at;
-    await editorState.insertImageNode(url);
+    await editorState.insertImageNode(normalized);
+  }
+
+  /// Tidy a pasted image URL: trim it and, when it has no scheme (e.g.
+  /// `example.com/cat.png`), assume `https://` so `Image.network` can fetch it.
+  /// `data:`/`http:`/`https:` are left untouched. Returns null for empty input.
+  String? _normalizeImageUrl(String? raw) {
+    final url = raw?.trim() ?? '';
+    if (url.isEmpty) return null;
+    if (url.startsWith('http://') ||
+        url.startsWith('https://') ||
+        url.startsWith('data:')) {
+      return url;
+    }
+    return 'https://$url';
   }
 
   /// Slash-menu palette: white surface, near-black ink, a single Action-Blue
