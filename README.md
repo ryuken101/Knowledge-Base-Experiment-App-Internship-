@@ -244,28 +244,82 @@ API (`kKbApiBaseUrl`, default `http://127.0.0.1:8000`) and run `flutter run -d w
 
 ---
 
-## 4. Setup & run (`kb_backend`)
+## 4. Setup & run (from a fresh clone)
+
+End-to-end: get the backend talking to SurrealDB, then run the Flutter editor against it.
+
+### 4.0 Prerequisites
+
+- **Python ≥ 3.10** + `pip`.
+- **Flutter SDK** (stable) with the **Windows desktop** toolchain (Visual Studio + "Desktop
+  development with C++"). Run `flutter doctor` until it's green. Windows/web are the only
+  platform scaffolds checked in (see §4.3 for macOS/Linux).
+- **Windows Developer Mode ON** — the Flutter build uses symlinks for plugins/the vendored
+  package. Enable via `start ms-settings:developers` (or the build will error with
+  "Building with plugins requires symlink support").
+- A reachable **SurrealDB** instance you have **root** credentials for (Surreal Cloud or
+  self-hosted), using namespace/database **`main`/`main`**. Optionally the `surreal` CLI for
+  schema import (otherwise use the Surrealist query editor).
+
+```bash
+git clone <repo-url>
+cd Knowledge-Base-Experiment-App-Internship-
+```
+
+### 4.1 Backend (`kb_backend`)
 
 ```bash
 cd kb_backend
 
-# 1. Import the schema into a SurrealDB instance (namespace + database = main),
-#    via the Surrealist query editor (paste schema.surql -> Run query) or:
-#    surreal import --conn <url> --user <root> --pass <pw> --ns main --db main schema.surql
+# 1. Credentials — copy the template and fill in your real SurrealDB values
+cp .env.example .env          # then edit SURREALDB_URL / USER / PASS (see the file)
 
-# 2. Configure credentials
-cp .env.example .env          # then edit .env with your real values
+# 2. Import the schema into SurrealDB (namespace + database = main). Either paste
+#    schema.surql into the Surrealist query editor and Run, or use the CLI:
+surreal import --conn <url> --user <root> --pass <pw> --ns main --db main schema.surql
 
-# 3. Install and run
-pip install -e ".[mcp]"       # execution layer + FastMCP server
-python -m kb_mcp              # launch the MCP server (stdio)
-
-# ...or the REST server instead:
+# 3. Install + run the REST API (this is the Flutter app's backend)
 pip install -e ".[api]"       # execution layer + FastAPI + uvicorn
-python -m kb_api             # launch the REST server (Swagger at /docs)
+python -m kb_api              # serves http://127.0.0.1:8000  (Swagger at /docs)
+
+# ...or the MCP server for the agent instead (or as well):
+pip install -e ".[mcp]"       # execution layer + FastMCP server
+python -m kb_mcp             # stdio MCP server
+#   (combine extras if you want both: pip install -e ".[api,mcp]")
 ```
 
-Library use:
+Quick check the API is up and the DB creds work: open `http://127.0.0.1:8000/docs` and hit
+`GET /documents` — a `200` (seeding the Personal/Team roots on first call) means the whole
+chain works. A `500` with `401 Unauthorized` means the SurrealDB credentials in `.env` are
+wrong or the server rejected them.
+
+### 4.2 Frontend (`kb_flutter`)
+
+With the REST API from §4.1 running:
+
+```bash
+cd ../kb_flutter
+flutter pub get               # resolves deps incl. the vendored third_party/appflowy_editor
+flutter run -d windows        # launch the desktop app
+```
+
+The app targets the backend at `kKbApiBaseUrl` (default `http://127.0.0.1:8000`, in
+`lib/api/kb_client.dart`) — edit it if you ran `kb_api` on a different host/port. No extra
+step is needed for the vendored `appflowy_editor` under `third_party/` — it's a `path:`
+dependency that `flutter pub get` resolves from the repo.
+
+### 4.3 Building on macOS / Linux
+
+Only the `windows/` and `web/` platform folders are committed. To build the desktop app on
+another OS, generate its runner first, then run:
+
+```bash
+cd kb_flutter
+flutter create --platforms=macos .   # or: --platforms=linux
+flutter run -d macos                  # or: -d linux
+```
+
+### 4.4 Library use (backend, no server)
 
 ```python
 from kb_program import KbCLI
