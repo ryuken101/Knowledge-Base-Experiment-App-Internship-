@@ -1,5 +1,9 @@
 surrealdb
 python-dotenv
 
+[api]
+fastapi
+uvicorn
+
 [mcp]
 mcp

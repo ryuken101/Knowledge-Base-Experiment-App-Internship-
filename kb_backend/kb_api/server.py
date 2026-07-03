@@ -18,9 +18,10 @@ import os
 from functools import lru_cache
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from kb_program import KbCLI, KbError
+from kb_program import DocumentCLI, KbCLI, KbError
 
 app = FastAPI(
     title="knowledge-base",
@@ -28,10 +29,24 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# CORS so the Flutter web build (served from a different origin) can call the API.
+# Wide open for single-user dev; tighten allow_origins when auth lands (Stage 3).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @lru_cache(maxsize=1)
 def _api() -> KbCLI:
     return KbCLI()
+
+
+@lru_cache(maxsize=1)
+def _docs() -> DocumentCLI:
+    return DocumentCLI()
 
 
 # ---- schemas -------------------------------------------------------------
@@ -55,6 +70,43 @@ class KnowledgeBaseOut(BaseModel):
 class DeleteResult(BaseModel):
     user_id: str | None = None
     deleted: bool = False
+
+
+class DocumentOut(BaseModel):
+    id: str | None = None
+    title: str = "Untitled"
+    parent_id: str | None = None
+    owner_id: str | None = None
+    is_folder: bool = False
+    position: int = 0
+    content: str | None = None  # populated only on read, omitted from list
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class DocumentSearchOut(DocumentOut):
+    snippet: str | None = None  # search-only excerpt; None for title-only hits
+
+
+class CreateDocumentRequest(BaseModel):
+    title: str | None = None
+    parent_id: str | None = None
+    is_folder: bool = False
+
+
+class UpdateDocumentRequest(BaseModel):
+    content: str | None = None
+    title: str | None = None
+
+
+class MoveDocumentRequest(BaseModel):
+    new_parent_id: str | None = None
+    index: int = 0
+
+
+class DocumentDeleteResult(BaseModel):
+    deleted: list[str] = []
+    count: int = 0
 
 
 # ---- routes --------------------------------------------------------------
@@ -111,6 +163,84 @@ def delete_knowledge_base_file() -> dict:
     its content. A later GET recreates an empty one (create-on-read)."""
     try:
         return _api().delete_knowledge_base()
+    except KbError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---- document tree -------------------------------------------------------
+#
+# Nested folder/document tree (Notion/Outline-style). Single-user for now: every
+# route operates on the configured KB_USER, returning that user's Personal
+# subtree plus the shared Team subtree. Document ids contain a colon
+# (`document:abc`); they are passed as a `:path` param so the colon survives.
+
+
+@app.get("/documents", response_model=list[DocumentOut])
+def list_documents() -> list[dict]:
+    """List the document tree as a flat array (metadata only, no content),
+    ordered by position. The client assembles the tree from `parent_id`."""
+    try:
+        return _docs().list_documents()
+    except KbError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/documents/search", response_model=list[DocumentSearchOut])
+def search_documents(q: str, limit: int = 20) -> list[dict]:
+    """Search visible documents by title/content (case-insensitive substring).
+    Each hit carries a `snippet` excerpt; title matches rank first. Declared
+    before `/documents/{doc_id:path}` so the greedy path route can't capture it."""
+    try:
+        return _docs().search_documents(q, limit=limit)
+    except KbError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/documents", response_model=DocumentOut)
+def create_document(body: CreateDocumentRequest) -> dict:
+    """Create a document (or folder) under `parent_id`, or top-level if omitted."""
+    try:
+        return _docs().create_document(
+            title=body.title, parent_id=body.parent_id, is_folder=body.is_folder
+        )
+    except KbError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/documents/{doc_id:path}", response_model=DocumentOut)
+def read_document(doc_id: str) -> dict:
+    """Return a single document including its markdown content."""
+    try:
+        return _docs().read_document(doc_id)
+    except KbError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put("/documents/{doc_id:path}", response_model=DocumentOut)
+def update_document(doc_id: str, body: UpdateDocumentRequest) -> dict:
+    """Set content and/or title on a document, bumping updated_at."""
+    try:
+        return _docs().update_document(doc_id, content=body.content, title=body.title)
+    except KbError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/documents/{doc_id:path}/move", response_model=DocumentOut)
+def move_document(doc_id: str, body: MoveDocumentRequest) -> dict:
+    """Reparent a document to `new_parent_id` (or top-level) at `index`."""
+    try:
+        return _docs().move_document(
+            doc_id, new_parent_id=body.new_parent_id, index=body.index
+        )
+    except KbError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/documents/{doc_id:path}", response_model=DocumentDeleteResult)
+def delete_document(doc_id: str) -> dict:
+    """Delete a document and its entire subtree."""
+    try:
+        return _docs().delete_document(doc_id)
     except KbError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
